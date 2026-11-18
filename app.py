@@ -1,8 +1,14 @@
 # EcoSpark – „Чувари на природата“ (Streamlit + Supabase + Google sign-in)
 import csv
 import io
+import re
+import smtplib
+import ssl
+import time
 import uuid
 from datetime import datetime
+from email.message import EmailMessage
+from pathlib import Path
 
 import streamlit as st
 from PIL import Image, ImageOps
@@ -19,9 +25,44 @@ def secret(name, default=None):
 
 
 ADMIN_EMAIL = str(secret("ADMIN_EMAIL", "josif.zoev123@gmail.com")).strip().lower()
-TERMS_VERSION = "2026-11-17"  # change this to make every user accept the terms again
+TERMS_VERSION = "2026-11-18"  # change this to make every user accept the terms again
 BUCKET = "post-images"
 MAX_IMAGES, MAX_MB = 3, 5
+ORDER_EMAIL = str(secret("ORDER_EMAIL", ADMIN_EMAIL)).strip()
+VOTE_URL = "https://milioner.mk/vote/0e0087f6-bea0-47dd-93e5-4c7e167b1841"
+QR_PATH = Path(__file__).parent / "assets" / "vote-qr.png"
+BOOK_PRICE, BUNDLE_PRICE = 200, 1200
+
+CHALLENGES = [
+    ("🌳", "Дарко – Чувари на дрвјата", [
+        "Засади семе или мало растение со помош на возрасен.",
+        "Собери паднати листови и направи мала природна слика.",
+        "Направи цртеж на дрво што би сакал да го заштитиш."]),
+    ("🐧", "Пако – Пријатели на поладната планета", [
+        "Исклучи светло кога ја напушташ просторијата.",
+        "Помини еден ден без непотребно користење електрични уреди.",
+        "Прашај ги родителите како можеме да штедиме енергија дома."]),
+    ("🌼", "Ирис – Пријатели на цветовите и инсектите", [
+        "Засади цвет што привлекува пчели и пеперутки.",
+        "Набљудувај пеперутка или пчела без да ја допираш.",
+        "Дознај зошто пчелите се важни за природата."]),
+    ("🐘", "Ела – Секоја капка вода е важна", [
+        "Затвори ја чешмата додека ги четкаш забите.",
+        "Провери дали некоја чешма дома капе.",
+        "Собери дождовница со помош на возрасен за наводнување растенија."]),
+    ("🐬", "Димче – Чисти води, тивок океан", [
+        "Употреби шише за вода што може повторно да се користи.",
+        "Собери пет парчиња отпад во парк или двор, со ракавици и надзор од возрасен.",
+        "Нацртај чисто море и море загадено со отпад и објасни ја разликата."]),
+    ("🦅", "Гордан – Пријатели на птиците и животните", [
+        "Набљудувај птици од безбедно растојание.",
+        "Постави плиток сад со чиста вода за птици, со помош на возрасен, и редовно чисти го.",
+        "Научи да препознаваш три птици од твојата околина."]),
+    ("♻️", "Заеднички предизвици на сите јунаци", [
+        "**Ден без пластична кеса** – користи платнена торба со родител.",
+        "**Играчка со втора шанса** – поправи или преуреди стара играчка со помош на возрасен.",
+        "**Мојот еко-дневник** – седум дена бележи една добра работа што си ја направил за природата."]),
+]
 
 CHARACTERS = [
     ("🌳", "Дарко", "уништувањето на шумата"),
@@ -82,7 +123,14 @@ TERMS_MD = f"""
 содржина што му штети на дете. Администраторот може да избрише содржина што не ги почитува
 правилата.
 
-### 8. Промени
+### 8. Нарачки
+Името и презимето, адресата и телефонскиот број што ги внесувате при нарачка се користат само за
+обработка и достава на вашата нарачка и за контакт во врска со неа. Не се објавуваат јавно, се чуваат
+во заштитена база и се испраќаат само до администраторот на EcoSpark. Не ги користиме за маркетинг
+без ваша посебна согласност. Можете да побарате нивно бришење откако нарачката ќе заврши, освен
+податоци што мораме да ги чуваме по закон (на пример, за сметководство).
+
+### 9. Промени
 Ако ги променим условите, ќе побараме повторно да ги прифатите пред да продолжите
 да објавувате или коментирате.
 """
@@ -256,6 +304,15 @@ def page_who():
     cols = st.columns(3)
     for i, (emoji, name, _) in enumerate(CHARACTERS):
         cols[i % 3].markdown(f"### {emoji} {name}")
+    with st.container(border=True):
+        c1, c2 = st.columns([1, 2], vertical_alignment="center")
+        if QR_PATH.exists():
+            c1.image(str(QR_PATH), width=200)
+        c2.subheader("Гласај за нашата идеја!")
+        c2.write("EcoSpark учествува во Brainsters Средношколски милионер. "
+                 "Скенирај го QR-кодот или кликни на копчето за да ја поддржиш нашата идеја со твој глас.")
+        c2.link_button("🗳 Гласај за EcoSpark", VOTE_URL, type="primary")
+        c2.caption(VOTE_URL)
     st.header("Јазот помеѓу знаењето и желбата да се дејствува")
     st.write(
         "Децата сè почесто слушаат за климатските промени, загадувањето и загрозените видови. "
@@ -307,6 +364,18 @@ def page_challenges():
     flash()
     if st.session_state.get("_err"):
         st.error(st.session_state.pop("_err"))
+
+    st.header("Еко-предизвици за малите чувари")
+    st.write("Избери предизвик од твојот омилен јунак и сподели како ти поминал!")
+    for emoji, title, items in CHALLENGES:
+        with st.expander(f"{emoji} {title}"):
+            for it in items:
+                st.markdown(f"- {it}")
+    st.caption("Безбедност: родителот ја потврдува завршената активност, а предизвиците се изведуваат "
+               "со возрасен кога е потребно. Имиња и фотографии на деца се објавуваат само со изречна "
+               "согласност од родителите; може да користите прекар.")
+    st.divider()
+    st.header("Заедница на чувари")
 
     u = member_gate("споделите еко-предизвик и да коментирате", "blog")
     if u:
@@ -418,6 +487,101 @@ def page_news():
             delete_button(f"news_{n['id']}", delete_news, n["id"])
 
 
+def send_order_email(o):
+    """Email the order to the admin. Returns True if sent."""
+    user, pw = secret("SMTP_USER"), secret("SMTP_PASSWORD")
+    if not user or not pw:
+        return False
+    msg = EmailMessage()
+    msg["Subject"] = "Нова нарачка – EcoSpark"
+    msg["From"] = user
+    msg["To"] = ORDER_EMAIL
+    msg.set_content(
+        "Нова нарачка преку EcoSpark\n\n"
+        f"Име и презиме: {o['full_name']}\n"
+        f"Адреса: {o['address']}\n"
+        f"Телефон: {o['phone']}\n\n"
+        f"Нарачано: {o['items']}\n"
+        f"Количина: {o['quantity']}\n"
+        f"Вкупно: {o['total_mkd']} денари\n"
+        f"Боенка гратис: {'да' if o['is_bundle'] else 'не'}\n"
+        f"Е-пошта на корисникот (ако е најавен): {o.get('user_email') or '-'}\n"
+    )
+    with smtplib.SMTP_SSL(secret("SMTP_HOST", "smtp.gmail.com"), 465,
+                          context=ssl.create_default_context(), timeout=20) as srv:
+        srv.login(user, pw)
+        srv.send_message(msg)
+    return True
+
+
+def page_order():
+    st.title("Нарачај")
+    st.write("Изберете сликовници или комплет. Ќе ве контактираме на телефон за потврда на нарачката.")
+    flash()
+
+    labels = {f"{e} {n} – {t}": n for e, n, t in CHARACTERS}
+    kind = st.radio("Што сакате да нарачате?",
+                    [f"Поединечни сликовници ({BOOK_PRICE} ден по парче)",
+                     f"Комплет од сите шест сликовници ({BUNDLE_PRICE:,} ден)".replace(",", ".")],
+                    key="order_kind")
+    bundle = kind.startswith("Комплет")
+    if bundle:
+        st.info("🎁 Комплетот доаѓа со специјално изработена EcoSpark боенка гратис!")
+        st.caption("Содржи: " + ", ".join(n for _, n, _ in CHARACTERS) + ".")
+        chosen = [n for _, n, _ in CHARACTERS]
+    else:
+        picked = st.multiselect("Изберете сликовници", list(labels), key="order_books")
+        chosen = [labels[p] for p in picked]
+        if len(chosen) == 6:
+            st.info("Ги избравте сите шест! Изберете „Комплет“ за да добиете и боенка гратис.")
+    qty = st.number_input("Количина", min_value=1, max_value=10, value=1, key="order_qty")
+    total = (BUNDLE_PRICE if bundle else BOOK_PRICE * len(chosen)) * qty
+    st.metric("Вкупно", f"{total:,} денари".replace(",", "."))
+
+    with st.form("order_form", clear_on_submit=True):
+        st.subheader("Податоци за достава")
+        name = st.text_input("Име и презиме", max_chars=80)
+        address = st.text_input("Адреса (улица, број, град)", max_chars=160)
+        phone = st.text_input("Телефонски број", max_chars=25, placeholder="07x xxx xxx")
+        ok = st.checkbox("Се согласувам името, адресата и телефонот да се користат само за обработка и "
+                         "достава на нарачката. Податоците не се јавни и се испраќаат само до EcoSpark.")
+        go = st.form_submit_button("Испрати нарачка", type="primary")
+    if not go:
+        return
+    digits = re.sub(r"\D", "", phone)
+    if not chosen:
+        st.error("Изберете барем една сликовница.")
+    elif len(name.strip().split()) < 2:
+        st.error("Внесете име и презиме.")
+    elif len(address.strip()) < 8:
+        st.error("Внесете целосна адреса.")
+    elif len(digits) < 8 or not re.fullmatch(r"\+?[0-9 /()\-]{8,25}", phone.strip()):
+        st.error("Внесете валиден телефонски број.")
+    elif not ok:
+        st.error("Потребна е согласност за користење на податоците.")
+    elif time.time() - st.session_state.get("last_order", 0) < 60:
+        st.error("Почекајте малку пред да испратите нова нарачка.")
+    else:
+        u = current()
+        order = {
+            "full_name": name.strip(), "address": address.strip(), "phone": phone.strip(),
+            "items": ", ".join(chosen) + (" (комплет + боенка)" if bundle else ""),
+            "is_bundle": bundle, "quantity": int(qty), "total_mkd": int(total),
+            "user_email": u["email"] if u else None,
+        }
+        try:
+            row = db().table("orders").insert(order).execute().data[0]  # saved first, never lost
+            st.session_state["last_order"] = time.time()
+            try:
+                if send_order_email(order):
+                    db().table("orders").update({"emailed": True}).eq("id", row["id"]).execute()
+            except Exception:
+                pass  # order is safe in the database; admin page shows it
+            st.success("Благодариме! Нарачката е примена. Ќе ве контактираме наскоро.")
+        except Exception as e:
+            st.error(f"Нарачката не успеа. Обидете се повторно. ({e})")
+
+
 def page_terms():
     st.title("Услови за користење")
     st.markdown(TERMS_MD)
@@ -439,6 +603,17 @@ def page_admin():
     st.caption("Користете ја според Условите (точка 5): споделувајте само што е потребно, "
                "по можност збирно или анонимно, и под обврска за доверливост.")
     st.dataframe(users, use_container_width=True)
+    st.subheader("Нарачки")
+    orders = db().table("orders").select("*").order("created_at", desc=True).limit(200).execute().data
+    if orders:
+        st.dataframe(orders, use_container_width=True,
+                     column_order=["created_at", "full_name", "phone", "address", "items", "quantity",
+                                   "total_mkd", "emailed"])
+        if not all(o.get("emailed") for o in orders):
+            st.warning("Некои нарачки не се испратени по е-пошта. Проверете ги SMTP_USER и SMTP_PASSWORD "
+                       "во secrets. Нарачките се безбедно зачувани тука.")
+    else:
+        st.caption("Сè уште нема нарачки.")
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=["email", "name", "terms_version", "terms_accepted_at", "created_at"],
                        extrasaction="ignore")
@@ -482,6 +657,7 @@ pages = [
     st.Page(page_products, title="Нашите производи", icon="📚", url_path="products"),
     st.Page(page_challenges, title="Еко предизвици", icon="💬", url_path="challenges"),
     st.Page(page_news, title="Заедница – Новости", icon="📣", url_path="news"),
+    st.Page(page_order, title="Нарачај", icon="🛒", url_path="order"),
     st.Page(page_terms, title="Услови за користење", icon="📄", url_path="terms"),
 ]
 if is_admin():
